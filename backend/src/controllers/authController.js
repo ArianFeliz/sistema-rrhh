@@ -1,6 +1,6 @@
 const bcrypt = require('bcryptjs');
 const jwt = require('jsonwebtoken');
-const { getPool, sql } = require('../config/db');
+const { getPool } = require('../config/db');
 require('dotenv').config();
 
 // ─── LOGIN ────────────────────────────────────────────────────────────────────
@@ -14,32 +14,33 @@ const login = async (req, res) => {
 
   try {
     const pool = getPool();
-    
+
     // Buscar el usuario en la base de datos
-    const resultado = await pool.request()
-      .input('usuario', sql.VarChar, usuario)
-      .query('SELECT * FROM Administradores WHERE Usuario = @usuario');
+    const resultado = await pool.query(
+      'SELECT * FROM "Administradores" WHERE "Usuario" = $1',
+      [usuario]
+    );
 
     // Si no existe el usuario
-    if (resultado.recordset.length === 0) {
+    if (resultado.rows.length === 0) {
       return res.status(401).json({ error: 'Credenciales incorrectas' });
     }
 
-    const admin = resultado.recordset[0];
+    const admin = resultado.rows[0];
 
     // Comparar la contraseña ingresada con el hash guardado
     const passwordValida = await bcrypt.compare(password, admin.Password);
-    
+
     if (!passwordValida) {
       return res.status(401).json({ error: 'Credenciales incorrectas' });
     }
 
     // Crear el token JWT
     const token = jwt.sign(
-      { 
-        id: admin.Id, 
+      {
+        id: admin.Id,
         usuario: admin.Usuario,
-        nombre: admin.Nombre 
+        nombre: admin.Nombre
       },
       process.env.JWT_SECRET,
       { expiresIn: process.env.JWT_EXPIRES_IN || '8h' }
@@ -74,26 +75,23 @@ const registrarAdmin = async (req, res) => {
     const pool = getPool();
 
     // Verificar si el usuario ya existe
-    const existe = await pool.request()
-      .input('usuario', sql.VarChar, usuario)
-      .query('SELECT Id FROM Administradores WHERE Usuario = @usuario');
+    const existe = await pool.query(
+      'SELECT "Id" FROM "Administradores" WHERE "Usuario" = $1',
+      [usuario]
+    );
 
-    if (existe.recordset.length > 0) {
+    if (existe.rows.length > 0) {
       return res.status(409).json({ error: 'El usuario ya existe' });
     }
 
     // Encriptar la contraseña (salt rounds = 10, es el nivel de seguridad)
     const hashPassword = await bcrypt.hash(password, 10);
 
-    await pool.request()
-      .input('usuario', sql.VarChar, usuario)
-      .input('password', sql.VarChar, hashPassword)
-      .input('nombre', sql.VarChar, nombre || null)
-      .input('email', sql.VarChar, email || null)
-      .query(`
-        INSERT INTO Administradores (Usuario, Password, Nombre, Email)
-        VALUES (@usuario, @password, @nombre, @email)
-      `);
+    await pool.query(
+      `INSERT INTO "Administradores" ("Usuario", "Password", "Nombre", "Email")
+       VALUES ($1, $2, $3, $4)`,
+      [usuario, hashPassword, nombre || null, email || null]
+    );
 
     res.status(201).json({ mensaje: 'Administrador creado exitosamente' });
 
@@ -106,9 +104,9 @@ const registrarAdmin = async (req, res) => {
 // ─── VERIFICAR TOKEN (para el frontend) ──────────────────────────────────────
 const verificarToken = async (req, res) => {
   // Si llega aquí, el middleware ya validó el token
-  res.json({ 
-    valido: true, 
-    usuario: req.admin 
+  res.json({
+    valido: true,
+    usuario: req.admin
   });
 };
 

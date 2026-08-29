@@ -1,4 +1,4 @@
-const { getPool, sql } = require('../config/db');
+const { getPool } = require('../config/db');
 const { registrarCambios } = require('./historialController');
 
 const calcularAnios = (fechaInicio) => {
@@ -22,26 +22,28 @@ const sincronizarEstadosVacaciones = async () => {
   const hoy = new Date();
   hoy.setHours(0, 0, 0, 0);
 
-  await pool.request()
-    .input('hoy', sql.Date, hoy)
-    .query(`UPDATE Empleados SET Estatus = 'Vacaciones', Vacaciones = 0
-            WHERE Id IN (
-              SELECT DISTINCT EmpleadoId FROM VacacionesEmpleados
-              WHERE (Cancelada = 0 OR Cancelada IS NULL)
-                AND FechaInicio <= @hoy
-                AND FechaFin >= @hoy
-            )`);
+  await pool.query(
+    `UPDATE "Empleados" SET "Estatus" = 'Vacaciones', "Vacaciones" = 0
+     WHERE "Id" IN (
+       SELECT DISTINCT "EmpleadoId" FROM "VacacionesEmpleados"
+       WHERE ("Cancelada" = false OR "Cancelada" IS NULL)
+         AND "FechaInicio" <= $1
+         AND "FechaFin" >= $1
+     )`,
+    [hoy]
+  );
 
-  await pool.request()
-    .input('hoy', sql.Date, hoy)
-    .query(`UPDATE Empleados SET Estatus = 'Activo', Vacaciones = 0
-            WHERE Estatus = 'Vacaciones'
-              AND Id NOT IN (
-                SELECT DISTINCT EmpleadoId FROM VacacionesEmpleados
-                WHERE (Cancelada = 0 OR Cancelada IS NULL)
-                  AND FechaInicio <= @hoy
-                  AND FechaFin >= @hoy
-              )`);
+  await pool.query(
+    `UPDATE "Empleados" SET "Estatus" = 'Activo', "Vacaciones" = 0
+     WHERE "Estatus" = 'Vacaciones'
+       AND "Id" NOT IN (
+         SELECT DISTINCT "EmpleadoId" FROM "VacacionesEmpleados"
+         WHERE ("Cancelada" = false OR "Cancelada" IS NULL)
+           AND "FechaInicio" <= $1
+           AND "FechaFin" >= $1
+       )`,
+    [hoy]
+  );
 };
 
 // ─── OBTENER TODOS LOS EMPLEADOS ──────────────────────────────────────────────
@@ -49,59 +51,36 @@ const obtenerEmpleados = async (req, res) => {
   try {
     await sincronizarEstadosVacaciones();
     const pool = getPool();
-    const hoy = new Date();
-    hoy.setHours(0, 0, 0, 0);
-
-    // Mantener el estado sincronizado con períodos de vacaciones en curso
-    await pool.request()
-      .input('hoy', sql.Date, hoy)
-      .query(`UPDATE Empleados SET Estatus = 'Vacaciones', Vacaciones = 0
-              WHERE Id IN (
-                SELECT DISTINCT EmpleadoId FROM VacacionesEmpleados
-                WHERE (Cancelada = 0 OR Cancelada IS NULL)
-                  AND FechaInicio <= @hoy
-                  AND FechaFin >= @hoy
-              )`);
-
-    await pool.request()
-      .input('hoy', sql.Date, hoy)
-      .query(`UPDATE Empleados SET Estatus = 'Activo', Vacaciones = 0
-              WHERE Estatus = 'Vacaciones'
-                AND Id NOT IN (
-                  SELECT DISTINCT EmpleadoId FROM VacacionesEmpleados
-                  WHERE (Cancelada = 0 OR Cancelada IS NULL)
-                    AND FechaInicio <= @hoy
-                    AND FechaFin >= @hoy
-                )`);
 
     const { buscar, estatus } = req.query;
 
-    let query = 'SELECT * FROM Empleados WHERE 1=1';
-    const request = pool.request();
+    let query = 'SELECT * FROM "Empleados" WHERE 1=1';
+    const params = [];
 
     if (buscar) {
+      params.push(`%${buscar}%`);
+      const idx = params.length;
       query += ` AND (
-         Nombre LIKE @buscar OR
-    Apellidos LIKE @buscar OR
-    Cedula LIKE @buscar OR
-    NumeroRH LIKE @buscar OR
-    Expediente LIKE @buscar
+         "Nombre" ILIKE $${idx} OR
+         "Apellidos" ILIKE $${idx} OR
+         "Cedula" ILIKE $${idx} OR
+         "NumeroRH" ILIKE $${idx} OR
+         "Expediente" ILIKE $${idx}
       )`;
-      request.input('buscar', sql.VarChar, `%${buscar}%`);
     }
 
     if (estatus) {
-      query += ' AND Estatus = @estatus';
-      request.input('estatus', sql.VarChar, estatus);
+      params.push(estatus);
+      query += ` AND "Estatus" = $${params.length}`;
     }
 
-    query += ' ORDER BY NumeroRH ASC';
+    query += ' ORDER BY "NumeroRH" ASC';
 
-    const resultado = await request.query(query);
+    const resultado = await pool.query(query, params);
 
     res.json({
-      total: resultado.recordset.length,
-      empleados: resultado.recordset
+      total: resultado.rows.length,
+      empleados: resultado.rows
     });
 
   } catch (error) {
@@ -116,42 +95,33 @@ const obtenerEmpleadoPorId = async (req, res) => {
 
   try {
     const pool = getPool();
-    const resultado = await pool.request()
-      .input('id', sql.Int, id)
-      .query('SELECT * FROM Empleados WHERE Id = @id');
+    const resultado = await pool.query('SELECT * FROM "Empleados" WHERE "Id" = $1', [id]);
 
-    if (resultado.recordset.length === 0) {
+    if (resultado.rows.length === 0) {
       return res.status(404).json({ error: 'Empleado no encontrado' });
     }
 
-    const empleado = resultado.recordset[0];
     await sincronizarEstadosVacaciones();
 
     const hoy = new Date();
-    const periodoEnCurso = await pool.request()
-      .input('id', sql.Int, id)
-      .input('hoy', sql.Date, hoy)
-      .query(`SELECT COUNT(*) as total FROM VacacionesEmpleados
-              WHERE EmpleadoId = @id
-                AND (Cancelada = 0 OR Cancelada IS NULL)
-                AND FechaInicio <= @hoy
-                AND FechaFin >= @hoy`);
+    const periodoEnCurso = await pool.query(
+      `SELECT COUNT(*) as total FROM "VacacionesEmpleados"
+       WHERE "EmpleadoId" = $1
+         AND ("Cancelada" = false OR "Cancelada" IS NULL)
+         AND "FechaInicio" <= $2
+         AND "FechaFin" >= $2`,
+      [id, hoy]
+    );
 
-    if (periodoEnCurso.recordset[0].total > 0) {
-      await pool.request()
-        .input('id', sql.Int, id)
-        .query("UPDATE Empleados SET Estatus = 'Vacaciones', Vacaciones = 0 WHERE Id = @id");
+    if (Number(periodoEnCurso.rows[0].total) > 0) {
+      await pool.query("UPDATE \"Empleados\" SET \"Estatus\" = 'Vacaciones', \"Vacaciones\" = 0 WHERE \"Id\" = $1", [id]);
     } else {
-      await pool.request()
-        .input('id', sql.Int, id)
-        .query("UPDATE Empleados SET Estatus = 'Activo', Vacaciones = 0 WHERE Id = @id");
+      await pool.query("UPDATE \"Empleados\" SET \"Estatus\" = 'Activo', \"Vacaciones\" = 0 WHERE \"Id\" = $1", [id]);
     }
 
-    const empleadoActualizado = await pool.request()
-      .input('id', sql.Int, id)
-      .query('SELECT * FROM Empleados WHERE Id = @id');
+    const empleadoActualizado = await pool.query('SELECT * FROM "Empleados" WHERE "Id" = $1', [id]);
 
-    res.json(empleadoActualizado.recordset[0]);
+    res.json(empleadoActualizado.rows[0]);
 
   } catch (error) {
     console.error('Error al obtener empleado:', error);
@@ -182,88 +152,58 @@ const crearEmpleado = async (req, res) => {
     const pool = getPool();
 
     // Verificar cédula duplicada
-    const existeCedula = await pool.request()
-      .input('cedula', sql.VarChar, Cedula)
-      .query('SELECT Id FROM Empleados WHERE Cedula = @cedula');
+    const existeCedula = await pool.query('SELECT "Id" FROM "Empleados" WHERE "Cedula" = $1', [Cedula]);
 
-      // Verificar que el NumeroRH no esté en uso
-if (NumeroRH) {
-  const existeRH = await pool.request()
-    .input('numeroRH', sql.VarChar, NumeroRH)
-    .query('SELECT Id FROM Empleados WHERE NumeroRH = @numeroRH');
+    // Verificar que el NumeroRH no esté en uso
+    if (NumeroRH) {
+      const existeRH = await pool.query('SELECT "Id" FROM "Empleados" WHERE "NumeroRH" = $1', [NumeroRH]);
+      if (existeRH.rows.length > 0) {
+        return res.status(409).json({ error: 'Ya existe un empleado con ese Número RH' });
+      }
+    }
 
-  if (existeRH.recordset.length > 0) {
-    return res.status(409).json({ error: 'Ya existe un empleado con ese Número RH' });
-  }
-}
+    if (Expediente) {
+      const existeExp = await pool.query('SELECT "Id" FROM "Empleados" WHERE "Expediente" = $1', [Expediente]);
+      if (existeExp.rows.length > 0) {
+        return res.status(409).json({ error: 'Ya existe un empleado con ese número de expediente' });
+      }
+    }
 
-if (Expediente) {
-  const existeExp = await pool.request()
-    .input('expediente', sql.VarChar, Expediente)
-    .query('SELECT Id FROM Empleados WHERE Expediente = @expediente');
-
-  if (existeExp.recordset.length > 0) {
-    return res.status(409).json({ error: 'Ya existe un empleado con ese número de expediente' });
-  }
-}
-
-    if (existeCedula.recordset.length > 0) {
+    if (existeCedula.rows.length > 0) {
       return res.status(409).json({ error: 'Ya existe un empleado con esa cédula' });
     }
 
     const tiempoEnEstadoValorParsed = Number.isInteger(Number(TiempoEnEstadoValor)) ? Number(TiempoEnEstadoValor) : null;
     const tiempoEnEstadoUnidadParsed = TiempoEnEstadoUnidad && ['meses', 'años', 'anos'].includes(TiempoEnEstadoUnidad.toLowerCase()) ? TiempoEnEstadoUnidad.toLowerCase() : null;
 
-    const resultado = await pool.request()
-      .input('NumeroRH',               sql.VarChar,      NumeroRH || null)
-      .input('Cedula',                 sql.VarChar,      Cedula)
-      .input('Nombre',                 sql.VarChar,      Nombre)
-      .input('Apellidos',              sql.VarChar,      Apellidos)
-      .input('Sexo',                   sql.VarChar,      Sexo || null)
-      .input('FechaNacimiento',        sql.Date,         FechaNacimiento || null)
-      .input('Edad',                   sql.Int,          Edad || null)
-      .input('NumeroTelefonico',       sql.VarChar,      NumeroTelefonico || null)
-      .input('Correo',                 sql.VarChar,      Correo || null)
-      .input('FechaIngreso',           sql.Date,         FechaIngreso || null)
-      .input('FechaSalida',            sql.Date,         FechaSalida || null)
-      .input('GrupoOcupacional',       sql.VarChar,      GrupoOcupacional || null)
-      .input('AFP',                    sql.VarChar,      AFP || null)
-      .input('ARS',                    sql.VarChar,      ARS || null)
-      .input('Vacaciones',             sql.Int,          Vacaciones || 0)
-      .input('LicenciasMedicas',       sql.Int,          LicenciasMedicas || 0)
-      .input('Faltas',                 sql.Int,          Faltas || 0)
-      .input('Estatus',                sql.VarChar,      Estatus || 'Activo')
-      .input('TiempoEnEstadoValor',    sql.Int,          tiempoEnEstadoValorParsed)
-      .input('TiempoEnEstadoUnidad',   sql.VarChar,      tiempoEnEstadoUnidadParsed)
-      .input('CargoInicial',           sql.VarChar,      CargoInicial || null)
-      .input('SalarioInicial',    sql.Decimal(10,2),SalarioInicial || null)
-      .input('CargoActual',       sql.VarChar,      CargoActual || null)
-      .input('SalarioActual',     sql.Decimal(10,2),SalarioActual || null)
-      .input('Itinerario',        sql.VarChar,      Itinerario || null)
-      .input('SalarioItinerario', sql.Decimal(10,2),SalarioItinerario || null)
-      .input('Expediente',        sql.VarChar,      Expediente || null)
-      .input('SalarioTotal',      sql.Decimal(10,2),SalarioTotal || null)
-      .query(`
-        INSERT INTO Empleados (
-          NumeroRH, Cedula, Nombre, Apellidos, Sexo, FechaNacimiento, Edad,
-          NumeroTelefonico, Correo, FechaIngreso, FechaSalida, GrupoOcupacional,
-          AFP, ARS, Vacaciones, LicenciasMedicas, Faltas, Estatus, TiempoEnEstadoValor, TiempoEnEstadoUnidad,
-          CargoInicial, SalarioInicial, CargoActual, SalarioActual,
-          Itinerario, SalarioItinerario, Expediente, SalarioTotal
+    const resultado = await pool.query(
+      `INSERT INTO "Empleados" (
+          "NumeroRH", "Cedula", "Nombre", "Apellidos", "Sexo", "FechaNacimiento", "Edad",
+          "NumeroTelefonico", "Correo", "FechaIngreso", "FechaSalida", "GrupoOcupacional",
+          "AFP", "ARS", "Vacaciones", "LicenciasMedicas", "Faltas", "Estatus", "TiempoEnEstadoValor", "TiempoEnEstadoUnidad",
+          "CargoInicial", "SalarioInicial", "CargoActual", "SalarioActual",
+          "Itinerario", "SalarioItinerario", "Expediente", "SalarioTotal"
         )
-        OUTPUT INSERTED.*
         VALUES (
-          @NumeroRH, @Cedula, @Nombre, @Apellidos, @Sexo, @FechaNacimiento, @Edad,
-          @NumeroTelefonico, @Correo, @FechaIngreso, @FechaSalida, @GrupoOcupacional,
-          @AFP, @ARS, @Vacaciones, @LicenciasMedicas, @Faltas, @Estatus, @TiempoEnEstadoValor, @TiempoEnEstadoUnidad,
-          @CargoInicial, @SalarioInicial, @CargoActual, @SalarioActual,
-          @Itinerario, @SalarioItinerario, @Expediente, @SalarioTotal
+          $1, $2, $3, $4, $5, $6, $7,
+          $8, $9, $10, $11, $12,
+          $13, $14, $15, $16, $17, $18, $19, $20,
+          $21, $22, $23, $24,
+          $25, $26, $27, $28
         )
-      `);
+        RETURNING *`,
+      [
+        NumeroRH || null, Cedula, Nombre, Apellidos, Sexo || null, FechaNacimiento || null, Edad || null,
+        NumeroTelefonico || null, Correo || null, FechaIngreso || null, FechaSalida || null, GrupoOcupacional || null,
+        AFP || null, ARS || null, Vacaciones || 0, LicenciasMedicas || 0, Faltas || 0, Estatus || 'Activo', tiempoEnEstadoValorParsed, tiempoEnEstadoUnidadParsed,
+        CargoInicial || null, SalarioInicial || null, CargoActual || null, SalarioActual || null,
+        Itinerario || null, SalarioItinerario || null, Expediente || null, SalarioTotal || null
+      ]
+    );
 
     res.status(201).json({
       mensaje: 'Empleado creado exitosamente',
-      empleado: resultado.recordset[0]
+      empleado: resultado.rows[0]
     });
 
   } catch (error) {
@@ -293,117 +233,78 @@ const actualizarEmpleado = async (req, res) => {
   try {
     const pool = getPool();
 
-    const existe = await pool.request()
-      .input('id', sql.Int, id)
-      .query('SELECT Id FROM Empleados WHERE Id = @id');
-
-    if (existe.recordset.length === 0) {
+    const existe = await pool.query('SELECT "Id" FROM "Empleados" WHERE "Id" = $1', [id]);
+    if (existe.rows.length === 0) {
       return res.status(404).json({ error: 'Empleado no encontrado' });
     }
 
-    const cedulaDuplicada = await pool.request()
-      .input('cedula', sql.VarChar, Cedula)
-      .input('id', sql.Int, id)
-      .query('SELECT Id FROM Empleados WHERE Cedula = @cedula AND Id != @id');
+    const cedulaDuplicada = await pool.query(
+      'SELECT "Id" FROM "Empleados" WHERE "Cedula" = $1 AND "Id" != $2',
+      [Cedula, id]
+    );
 
     if (NumeroRH) {
-      const existeRH = await pool.request()
-        .input('numeroRH', sql.VarChar, NumeroRH)
-        .input('id', sql.Int, id)
-        .query('SELECT Id FROM Empleados WHERE NumeroRH = @numeroRH AND Id != @id');
-
-      if (existeRH.recordset.length > 0) {
+      const existeRH = await pool.query(
+        'SELECT "Id" FROM "Empleados" WHERE "NumeroRH" = $1 AND "Id" != $2',
+        [NumeroRH, id]
+      );
+      if (existeRH.rows.length > 0) {
         return res.status(409).json({ error: 'Ese Número RH ya pertenece a otro empleado' });
       }
     }
 
-    if (NumeroRH) {
-  const existeRH = await pool.request()
-    .input('numeroRH', sql.VarChar, NumeroRH)
-    .input('id', sql.Int, id)
-    .query('SELECT Id FROM Empleados WHERE NumeroRH = @numeroRH AND Id != @id');
+    // Obtener datos anteriores ANTES del UPDATE
+    const anterior = await pool.query('SELECT * FROM "Empleados" WHERE "Id" = $1', [id]);
+    const datosAnteriores = anterior.rows[0];
 
-  if (existeRH.recordset.length > 0) {
-    return res.status(409).json({ error: 'Ese Número RH ya pertenece a otro empleado' });
-  }
-}
-
-    // 👈 PASO 2: obtener datos anteriores ANTES del UPDATE
-    const anterior = await pool.request()
-      .input('id', sql.Int, id)
-      .query('SELECT * FROM Empleados WHERE Id = @id');
-    const datosAnteriores = anterior.recordset[0];
-
-    if (cedulaDuplicada.recordset.length > 0) {
+    if (cedulaDuplicada.rows.length > 0) {
       return res.status(409).json({ error: 'Esa cédula ya pertenece a otro empleado' });
     }
 
-    const resultado = await pool.request()
-      .input('id',               sql.Int,           id)
-      .input('NumeroRH',         sql.VarChar,       NumeroRH || null)
-      .input('Cedula',           sql.VarChar,       Cedula)
-      .input('Nombre',           sql.VarChar,       Nombre)
-      .input('Apellidos',        sql.VarChar,       Apellidos)
-      .input('Sexo',             sql.VarChar,       Sexo || null)
-      .input('FechaNacimiento',  sql.Date,          FechaNacimiento || null)
-      .input('Edad',             sql.Int,           Edad || null)
-      .input('NumeroTelefonico', sql.VarChar,       NumeroTelefonico || null)
-      .input('Correo',           sql.VarChar,       Correo || null)
-      .input('FechaIngreso',     sql.Date,          FechaIngreso || null)
-      .input('FechaSalida',      sql.Date,          FechaSalida || null)
-      .input('GrupoOcupacional', sql.VarChar,       GrupoOcupacional || null)
-      .input('AFP',              sql.VarChar,       AFP || null)
-      .input('ARS',              sql.VarChar,       ARS || null)
-      .input('Vacaciones',             sql.Int,          Vacaciones || 0)
-      .input('LicenciasMedicas',        sql.Int,          LicenciasMedicas || 0)
-      .input('Faltas',                  sql.Int,          Faltas || 0)
-      .input('Estatus',                 sql.VarChar,      Estatus || 'Activo')
-      .input('TiempoEnEstadoValor',     sql.Int,          Number.isInteger(Number(TiempoEnEstadoValor)) ? Number(TiempoEnEstadoValor) : null)
-      .input('TiempoEnEstadoUnidad',    sql.VarChar,      TiempoEnEstadoUnidad && ['meses','años','anos'].includes(TiempoEnEstadoUnidad.toLowerCase()) ? TiempoEnEstadoUnidad.toLowerCase() : null)
-      .input('CargoInicial',            sql.VarChar,      CargoInicial || null)
-      .input('SalarioInicial',   sql.Decimal(10,2), SalarioInicial || null)
-      .input('CargoActual',      sql.VarChar,       CargoActual || null)
-      .input('SalarioActual',    sql.Decimal(10,2), SalarioActual || null)
-      .input('Itinerario',       sql.VarChar,       Itinerario || null)
-      .input('SalarioItinerario',sql.Decimal(10,2), SalarioItinerario || null)
-      .input('Expediente',       sql.VarChar,       Expediente || null)
-      .input('SalarioTotal',     sql.Decimal(10,2), SalarioTotal || null)
-      .query(`
-        UPDATE Empleados SET
-          NumeroRH          = @NumeroRH,
-          Cedula            = @Cedula,
-          Nombre            = @Nombre,
-          Apellidos         = @Apellidos,
-          Sexo              = @Sexo,
-          FechaNacimiento   = @FechaNacimiento,
-          Edad              = @Edad,
-          NumeroTelefonico  = @NumeroTelefonico,
-          Correo            = @Correo,
-          FechaIngreso      = @FechaIngreso,
-          FechaSalida       = @FechaSalida,
-          GrupoOcupacional  = @GrupoOcupacional,
-          AFP               = @AFP,
-          ARS               = @ARS,
-          Vacaciones        = @Vacaciones,
-          LicenciasMedicas  = @LicenciasMedicas,
-          Faltas            = @Faltas,
-          Estatus           = @Estatus,
-          TiempoEnEstadoValor = @TiempoEnEstadoValor,
-          TiempoEnEstadoUnidad = @TiempoEnEstadoUnidad,
-          CargoInicial      = @CargoInicial,
-          SalarioInicial    = @SalarioInicial,
-          CargoActual       = @CargoActual,
-          SalarioActual     = @SalarioActual,
-          Itinerario        = @Itinerario,
-          SalarioItinerario = @SalarioItinerario,
-          Expediente        = @Expediente,
-          SalarioTotal      = @SalarioTotal
-        OUTPUT INSERTED.*
-        WHERE Id = @id
-      `);
+    await pool.query(
+      `UPDATE "Empleados" SET
+          "NumeroRH"          = $1,
+          "Cedula"            = $2,
+          "Nombre"            = $3,
+          "Apellidos"         = $4,
+          "Sexo"              = $5,
+          "FechaNacimiento"   = $6,
+          "Edad"              = $7,
+          "NumeroTelefonico"  = $8,
+          "Correo"            = $9,
+          "FechaIngreso"      = $10,
+          "FechaSalida"       = $11,
+          "GrupoOcupacional"  = $12,
+          "AFP"               = $13,
+          "ARS"               = $14,
+          "Vacaciones"        = $15,
+          "LicenciasMedicas"  = $16,
+          "Faltas"            = $17,
+          "Estatus"           = $18,
+          "TiempoEnEstadoValor" = $19,
+          "TiempoEnEstadoUnidad" = $20,
+          "CargoInicial"      = $21,
+          "SalarioInicial"    = $22,
+          "CargoActual"       = $23,
+          "SalarioActual"     = $24,
+          "Itinerario"        = $25,
+          "SalarioItinerario" = $26,
+          "Expediente"        = $27,
+          "SalarioTotal"      = $28
+        WHERE "Id" = $29`,
+      [
+        NumeroRH || null, Cedula, Nombre, Apellidos, Sexo || null, FechaNacimiento || null, Edad || null,
+        NumeroTelefonico || null, Correo || null, FechaIngreso || null, FechaSalida || null, GrupoOcupacional || null,
+        AFP || null, ARS || null, Vacaciones || 0, LicenciasMedicas || 0, Faltas || 0, Estatus || 'Activo',
+        Number.isInteger(Number(TiempoEnEstadoValor)) ? Number(TiempoEnEstadoValor) : null,
+        TiempoEnEstadoUnidad && ['meses', 'años', 'anos'].includes(TiempoEnEstadoUnidad.toLowerCase()) ? TiempoEnEstadoUnidad.toLowerCase() : null,
+        CargoInicial || null, SalarioInicial || null, CargoActual || null, SalarioActual || null,
+        Itinerario || null, SalarioItinerario || null, Expediente || null, SalarioTotal || null,
+        id
+      ]
+    );
 
-
-      await registrarCambios(id, datosAnteriores, req.body, req.admin?.usuario);
+    await registrarCambios(id, datosAnteriores, req.body, req.admin?.usuario);
 
     res.json({ mensaje: 'Empleado actualizado correctamente' });
 
@@ -420,19 +321,14 @@ const eliminarEmpleado = async (req, res) => {
   try {
     const pool = getPool();
 
-    const existe = await pool.request()
-      .input('id', sql.Int, id)
-      .query('SELECT Id, Nombre, Apellidos FROM Empleados WHERE Id = @id');
-
-    if (existe.recordset.length === 0) {
+    const existe = await pool.query('SELECT "Id", "Nombre", "Apellidos" FROM "Empleados" WHERE "Id" = $1', [id]);
+    if (existe.rows.length === 0) {
       return res.status(404).json({ error: 'Empleado no encontrado' });
     }
 
-    const empleado = existe.recordset[0];
+    const empleado = existe.rows[0];
 
-    await pool.request()
-      .input('id', sql.Int, id)
-      .query('DELETE FROM Empleados WHERE Id = @id');
+    await pool.query('DELETE FROM "Empleados" WHERE "Id" = $1', [id]);
 
     res.json({
       mensaje: `Empleado ${empleado.Nombre} ${empleado.Apellidos} eliminado exitosamente`
@@ -447,10 +343,11 @@ const eliminarEmpleado = async (req, res) => {
 const obtenerSiguienteRH = async (req, res) => {
   try {
     const pool = getPool();
-    const resultado = await pool.request()
-      .query(`SELECT NumeroRH FROM Empleados WHERE NumeroRH LIKE 'RH-%' ORDER BY NumeroRH ASC`);
+    const resultado = await pool.query(
+      `SELECT "NumeroRH" FROM "Empleados" WHERE "NumeroRH" LIKE 'RH-%' ORDER BY "NumeroRH" ASC`
+    );
 
-    const numerosUsados = resultado.recordset
+    const numerosUsados = resultado.rows
       .map(r => parseInt(r.NumeroRH.replace('RH-', '')))
       .filter(n => !isNaN(n));
 
@@ -468,8 +365,6 @@ const obtenerSiguienteRH = async (req, res) => {
     res.status(500).json({ error: 'Error al generar número RH' });
   }
 };
-
-
 
 module.exports = {
   obtenerEmpleados,

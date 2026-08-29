@@ -1,4 +1,4 @@
-const { sql, getPool } = require('../config/db');
+const { getPool } = require('../config/db');
 const puppeteer = require('puppeteer');
 const path = require('path');
 const fs = require('fs');
@@ -8,23 +8,23 @@ const generarReporte = async (req, res) => {
     const pool = getPool();
     const { estatus, cargo, itinerario, AFP, ARS, grupoOcupacional, salarioMin, salarioMax } = req.query;
 
-    let query = 'SELECT * FROM Empleados WHERE 1=1';
-    const request = pool.request();
+    let query = 'SELECT * FROM "Empleados" WHERE 1=1';
+    const params = [];
 
-    if (estatus) { query += ' AND Estatus = @estatus'; request.input('estatus', sql.VarChar, estatus); }
-    if (cargo) { query += ' AND CargoActual LIKE @cargo'; request.input('cargo', sql.VarChar, `%${cargo}%`); }
-    if (itinerario) { query += ' AND Itinerario LIKE @itinerario'; request.input('itinerario', sql.VarChar, `%${itinerario}%`); }
-    if (AFP) { query += ' AND AFP LIKE @AFP'; request.input('AFP', sql.VarChar, `%${AFP}%`); }
-    if (ARS) { query += ' AND ARS LIKE @ARS'; request.input('ARS', sql.VarChar, `%${ARS}%`); }
-    if (grupoOcupacional) { query += ' AND GrupoOcupacional LIKE @grupoOcupacional'; request.input('grupoOcupacional', sql.VarChar, `%${grupoOcupacional}%`); }
-    if (salarioMin) { query += ' AND SalarioActual >= @salarioMin'; request.input('salarioMin', sql.Decimal(10,2), salarioMin); }
-    if (salarioMax) { query += ' AND SalarioActual <= @salarioMax'; request.input('salarioMax', sql.Decimal(10,2), salarioMax); }
+    if (estatus) { params.push(estatus); query += ` AND "Estatus" = $${params.length}`; }
+    if (cargo) { params.push(`%${cargo}%`); query += ` AND "CargoActual" ILIKE $${params.length}`; }
+    if (itinerario) { params.push(`%${itinerario}%`); query += ` AND "Itinerario" ILIKE $${params.length}`; }
+    if (AFP) { params.push(`%${AFP}%`); query += ` AND "AFP" ILIKE $${params.length}`; }
+    if (ARS) { params.push(`%${ARS}%`); query += ` AND "ARS" ILIKE $${params.length}`; }
+    if (grupoOcupacional) { params.push(`%${grupoOcupacional}%`); query += ` AND "GrupoOcupacional" ILIKE $${params.length}`; }
+    if (salarioMin) { params.push(salarioMin); query += ` AND "SalarioActual" >= $${params.length}`; }
+    if (salarioMax) { params.push(salarioMax); query += ` AND "SalarioActual" <= $${params.length}`; }
 
     const limite = req.query.limite ? parseInt(req.query.limite) : null;
-query += ' ORDER BY NumeroRH ASC';
-if (limite) query = query.replace('SELECT *', `SELECT TOP ${limite} *`);
-    const resultado = await request.query(query);
-    const empleados = resultado.recordset;
+    query += ' ORDER BY "NumeroRH" ASC';
+    if (limite) query += ` LIMIT ${limite}`;
+    const resultado = await pool.query(query, params);
+    const empleados = resultado.rows;
 
     const logoPath = path.join(__dirname, '../templates/logo.png');
     const logoBase64 = fs.existsSync(logoPath)

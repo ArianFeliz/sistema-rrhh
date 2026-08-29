@@ -1,13 +1,17 @@
-const { sql, getPool } = require('../config/db');
+const { getPool } = require('../config/db');
 const puppeteer = require('puppeteer');
 const path = require('path');
 const fs = require('fs');
 
 const camposLaborales = [
+  'NumeroRH', 'Cedula', 'Nombre', 'Apellidos', 'Sexo',
+  'FechaNacimiento', 'Edad', 'NumeroTelefonico', 'Correo',
   'CargoInicial', 'CargoActual', 'SalarioInicial', 'SalarioActual',
   'SalarioItinerario', 'Itinerario', 'GrupoOcupacional',
   'FechaIngreso', 'FechaSalida', 'Estatus', 'AFP', 'ARS',
-  'Vacaciones', 'LicenciasMedicas', 'Faltas'
+  'Vacaciones', 'LicenciasMedicas', 'Faltas',
+  'TiempoEnEstadoValor', 'TiempoEnEstadoUnidad',
+  'Expediente', 'SalarioTotal'
 ];
 
 const registrarCambios = async (empleadoId, datosAnteriores, datosNuevos, usuarioAdmin) => {
@@ -22,14 +26,11 @@ const registrarCambios = async (empleadoId, datosAnteriores, datosNuevos, usuari
       const anterior = formatVal(datosAnteriores[campo]);
       const nuevo = formatVal(datosNuevos[campo]);
       if (anterior !== nuevo) {
-        await pool.request()
-          .input('EmpleadoId', sql.Int, empleadoId)
-          .input('Campo', sql.NVarChar, campo)
-          .input('ValorAnterior', sql.NVarChar, anterior)
-          .input('ValorNuevo', sql.NVarChar, nuevo)
-          .input('UsuarioAdmin', sql.NVarChar, usuarioAdmin || 'Admin')
-          .query(`INSERT INTO HistorialEmpleados (EmpleadoId, Campo, ValorAnterior, ValorNuevo, UsuarioAdmin)
-                  VALUES (@EmpleadoId, @Campo, @ValorAnterior, @ValorNuevo, @UsuarioAdmin)`);
+        await pool.query(
+          `INSERT INTO "HistorialEmpleados" ("EmpleadoId", "Campo", "ValorAnterior", "ValorNuevo", "UsuarioAdmin")
+           VALUES ($1, $2, $3, $4, $5)`,
+          [empleadoId, campo, anterior, nuevo, usuarioAdmin || 'Admin']
+        );
       }
     }
   } catch (e) {
@@ -40,16 +41,15 @@ const registrarCambios = async (empleadoId, datosAnteriores, datosNuevos, usuari
 const obtenerHistorial = async (req, res) => {
   try {
     const pool = getPool();
-    const resultado = await pool.request()
-      .input('id', sql.Int, req.params.id)
-      .query(`
-        SELECT h.*, e.Nombre, e.Apellidos, e.NumeroRH
-        FROM HistorialEmpleados h
-        JOIN Empleados e ON h.EmpleadoId = e.Id
-        WHERE h.EmpleadoId = @id
-        ORDER BY h.FechaHora DESC
-      `);
-    res.json({ historial: resultado.recordset });
+    const resultado = await pool.query(
+      `SELECT h.*, e."Nombre", e."Apellidos", e."NumeroRH"
+       FROM "HistorialEmpleados" h
+       JOIN "Empleados" e ON h."EmpleadoId" = e."Id"
+       WHERE h."EmpleadoId" = $1
+       ORDER BY h."FechaHora" DESC`,
+      [req.params.id]
+    );
+    res.json({ historial: resultado.rows });
   } catch (e) {
     res.status(500).json({ error: 'Error al obtener historial' });
   }
@@ -60,18 +60,20 @@ const imprimirHistorial = async (req, res) => {
     const pool = getPool();
     const fecha = req.query.fecha;
     let queryH = `
-      SELECT h.*, e.Nombre, e.Apellidos, e.NumeroRH, e.Cedula, e.CargoActual
-      FROM HistorialEmpleados h
-      JOIN Empleados e ON h.EmpleadoId = e.Id
-      WHERE h.EmpleadoId = @id
+      SELECT h.*, e."Nombre", e."Apellidos", e."NumeroRH", e."Cedula", e."CargoActual"
+      FROM "HistorialEmpleados" h
+      JOIN "Empleados" e ON h."EmpleadoId" = e."Id"
+      WHERE h."EmpleadoId" = $1
     `;
-    if (fecha) queryH += ` AND CAST(h.FechaHora AS DATE) = '${fecha}'`;
-    queryH += ' ORDER BY h.FechaHora DESC';
-    const resultado = await pool.request()
-      .input('id', sql.Int, req.params.id)
-      .query(queryH);
+    const params = [req.params.id];
+    if (fecha) {
+      params.push(fecha);
+      queryH += ` AND CAST(h."FechaHora" AS DATE) = $2`;
+    }
+    queryH += ' ORDER BY h."FechaHora" DESC';
+    const resultado = await pool.query(queryH, params);
 
-    const historial = resultado.recordset;
+    const historial = resultado.rows;
     const emp = historial[0] || {};
 
     const logoPath = path.join(__dirname, '../templates/logo.png');
@@ -99,11 +101,11 @@ const imprimirHistorial = async (req, res) => {
       }
       return val;
     };
-const formatearCampo = (campo) => {
-  if (!campo) return '—';
-  return campo.replace(/([a-z])([A-Z])/g, '$1 $2');
-};
-   const filas = historial.map((h, i) => `
+    const formatearCampo = (campo) => {
+      if (!campo) return '—';
+      return campo.replace(/([a-z])([A-Z])/g, '$1 $2');
+    };
+    const filas = historial.map((h, i) => `
   <tr style="background:${i % 2 === 0 ? '#fff' : '#f8f9fb'}">
     <td>${formatFecha(h.FechaHora)}<br><small>${formatHora(h.FechaHora)}</small></td>
     <td><strong>${formatearCampo(h.Campo)}</strong></td>
@@ -149,7 +151,7 @@ const formatearCampo = (campo) => {
     td { padding: 7px 10px; font-size: 11px; border-bottom: 1px solid #eee; }
     small { color: #666; font-size: 10px; }
     .footer { 
-  margin-top: auto; /* 🔥 lo empuja hacia abajo */
+  margin-top: auto;
   text-align: center; 
   font-size: 10px; 
   color: #666; 
@@ -215,11 +217,9 @@ const formatearCampo = (campo) => {
 const eliminarHistorialItem = async (req, res) => {
   try {
     const pool = getPool();
-    const result = await pool.request()
-      .input('id', sql.Int, req.params.id)
-      .query('DELETE FROM HistorialEmpleados WHERE Id = @id');
+    const result = await pool.query('DELETE FROM "HistorialEmpleados" WHERE "Id" = $1', [req.params.id]);
 
-    if (result.rowsAffected[0] === 0) return res.status(404).json({ error: 'Registro de historial no encontrado' });
+    if (result.rowCount === 0) return res.status(404).json({ error: 'Registro de historial no encontrado' });
     res.json({ message: 'Registro de historial eliminado' });
   } catch (e) {
     console.error('Error al eliminar historial:', e);
@@ -230,11 +230,9 @@ const eliminarHistorialItem = async (req, res) => {
 const eliminarHistorialEmpleado = async (req, res) => {
   try {
     const pool = getPool();
-    const result = await pool.request()
-      .input('id', sql.Int, req.params.id)
-      .query('DELETE FROM HistorialEmpleados WHERE EmpleadoId = @id');
+    const result = await pool.query('DELETE FROM "HistorialEmpleados" WHERE "EmpleadoId" = $1', [req.params.id]);
 
-    res.json({ message: 'Historial del empleado eliminado', eliminados: result.rowsAffected[0] });
+    res.json({ message: 'Historial del empleado eliminado', eliminados: result.rowCount });
   } catch (e) {
     console.error('Error al eliminar historial completo del empleado:', e);
     res.status(500).json({ error: 'Error al eliminar historial del empleado' });
@@ -247,14 +245,10 @@ const eliminarHistorialBulk = async (req, res) => {
     if (!ids.length) return res.status(400).json({ error: 'No se proporcionaron IDs para eliminar' });
 
     const pool = getPool();
-    const request = pool.request();
-    const idsMarkers = ids.map((id, index) => {
-      request.input(`id${index}`, sql.Int, id);
-      return `@id${index}`;
-    }).join(',');
+    const placeholders = ids.map((_, index) => `$${index + 1}`).join(',');
 
-    const result = await request.query(`DELETE FROM HistorialEmpleados WHERE Id IN (${idsMarkers})`);
-    res.json({ message: 'Historial eliminado en lote', eliminados: result.rowsAffected[0] });
+    const result = await pool.query(`DELETE FROM "HistorialEmpleados" WHERE "Id" IN (${placeholders})`, ids);
+    res.json({ message: 'Historial eliminado en lote', eliminados: result.rowCount });
   } catch (e) {
     console.error('Error al eliminar historial en lote:', e);
     res.status(500).json({ error: 'Error al eliminar historial en lote' });
@@ -264,14 +258,11 @@ const eliminarHistorialBulk = async (req, res) => {
 const registrarEventoHistorial = async (empleadoId, campo, valorAnterior, valorNuevo, usuarioAdmin = 'Admin') => {
   try {
     const pool = getPool();
-    await pool.request()
-      .input('EmpleadoId', sql.Int, empleadoId)
-      .input('Campo', sql.NVarChar, campo)
-      .input('ValorAnterior', sql.NVarChar, valorAnterior)
-      .input('ValorNuevo', sql.NVarChar, valorNuevo)
-      .input('UsuarioAdmin', sql.NVarChar, usuarioAdmin)
-      .query(`INSERT INTO HistorialEmpleados (EmpleadoId, Campo, ValorAnterior, ValorNuevo, UsuarioAdmin)
-              VALUES (@EmpleadoId, @Campo, @ValorAnterior, @ValorNuevo, @UsuarioAdmin)`);
+    await pool.query(
+      `INSERT INTO "HistorialEmpleados" ("EmpleadoId", "Campo", "ValorAnterior", "ValorNuevo", "UsuarioAdmin")
+       VALUES ($1, $2, $3, $4, $5)`,
+      [empleadoId, campo, valorAnterior, valorNuevo, usuarioAdmin]
+    );
   } catch (e) {
     console.error('Error al registrar evento de historial:', e);
   }

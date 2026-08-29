@@ -1,5 +1,5 @@
 const express = require('express');
-const { sql, getPool } = require('../config/db');
+const { getPool } = require('../config/db');
 const { verificarJWT } = require('../middlewares/authMiddleware');
 const { obtenerHistorial, imprimirHistorial, eliminarHistorialItem, eliminarHistorialEmpleado, eliminarHistorialBulk } = require('../controllers/historialController');
 
@@ -9,15 +9,14 @@ router.get('/:id/imprimir', verificarJWT, imprimirHistorial);
 router.get('/:id/fechas', verificarJWT, async (req, res) => {
   try {
     const pool = getPool();
-    const resultado = await pool.request()
-      .input('id', sql.Int, req.params.id)
-      .query(`
-        SELECT DISTINCT CAST(FechaHora AS DATE) as Fecha
-        FROM HistorialEmpleados
-        WHERE EmpleadoId = @id
-        ORDER BY Fecha DESC
-      `);
-    res.json({ fechas: resultado.recordset.map(r => r.Fecha) });
+    const resultado = await pool.query(
+      `SELECT DISTINCT CAST("FechaHora" AS DATE) as "Fecha"
+       FROM "HistorialEmpleados"
+       WHERE "EmpleadoId" = $1
+       ORDER BY "Fecha" DESC`,
+      [req.params.id]
+    );
+    res.json({ fechas: resultado.rows.map(r => r.Fecha) });
   } catch (e) {
     res.status(500).json({ error: 'Error al obtener fechas' });
   }

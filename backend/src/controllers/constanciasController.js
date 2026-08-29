@@ -1,5 +1,5 @@
 const puppeteer = require('puppeteer');
-const { getPool, sql } = require('../config/db');
+const { getPool } = require('../config/db');
 const { generarConstanciaHTML } = require('../templates/constanciaTemplate');
 
 const generarConstancia = async (req, res) => {
@@ -13,15 +13,13 @@ const generarConstancia = async (req, res) => {
 
   try {
     const pool = getPool();
-    const resultado = await pool.request()
-      .input('id', sql.Int, id)
-      .query('SELECT * FROM Empleados WHERE Id = @id');
+    const resultado = await pool.query('SELECT * FROM "Empleados" WHERE "Id" = $1', [id]);
 
-    if (resultado.recordset.length === 0) {
+    if (resultado.rows.length === 0) {
       return res.status(404).json({ error: 'Empleado no encontrado' });
     }
 
-    const empleado = resultado.recordset[0];
+    const empleado = resultado.rows[0];
     const html = generarConstanciaHTML(empleado, tipo);
 
    const browser = await puppeteer.launch({

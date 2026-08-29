@@ -1,4 +1,4 @@
-const { getPool, sql } = require('../config/db');
+const { getPool } = require('../config/db');
 const { registrarEventoHistorial } = require('./historialController');
 const puppeteer = require('puppeteer');
 const path = require('path');
@@ -83,20 +83,22 @@ const obtenerAniosServicioDesdeEmpleado = (empleadoInfo) => {
 
 const obtenerDiasTomados = async (pool, empleadoId, anio = null) => {
   const anioFiltro = Number.isInteger(anio) ? anio : new Date().getFullYear();
-  const result = await pool.request()
-    .input('empleadoId', sql.Int, empleadoId)
-    .input('anio', sql.Int, anioFiltro)
-    .query("SELECT ISNULL(SUM(DiasCorresponden), 0) as total FROM VacacionesEmpleados WHERE EmpleadoId = @empleadoId AND YEAR(FechaInicio) = @anio AND (Cancelada = 0 OR Cancelada IS NULL)");
-  return Number(result.recordset[0].total || 0);
+  const result = await pool.query(
+    `SELECT COALESCE(SUM("DiasCorresponden"), 0) as total FROM "VacacionesEmpleados"
+     WHERE "EmpleadoId" = $1 AND EXTRACT(YEAR FROM "FechaInicio") = $2 AND ("Cancelada" = false OR "Cancelada" IS NULL)`,
+    [empleadoId, anioFiltro]
+  );
+  return Number(result.rows[0].total || 0);
 };
 
 const obtenerPeriodosTomados = async (pool, empleadoId, anio = null) => {
   const anioFiltro = Number.isInteger(anio) ? anio : new Date().getFullYear();
-  const result = await pool.request()
-    .input('empleadoId', sql.Int, empleadoId)
-    .input('anio', sql.Int, anioFiltro)
-    .query("SELECT COUNT(*) as total FROM VacacionesEmpleados WHERE EmpleadoId = @empleadoId AND YEAR(FechaInicio) = @anio AND (Cancelada = 0 OR Cancelada IS NULL)");
-  return Number(result.recordset[0].total || 0);
+  const result = await pool.query(
+    `SELECT COUNT(*) as total FROM "VacacionesEmpleados"
+     WHERE "EmpleadoId" = $1 AND EXTRACT(YEAR FROM "FechaInicio") = $2 AND ("Cancelada" = false OR "Cancelada" IS NULL)`,
+    [empleadoId, anioFiltro]
+  );
+  return Number(result.rows[0].total || 0);
 };
 
 const sincronizarEstadoEmpleadoVacaciones = async (empleadoId) => {
@@ -104,11 +106,12 @@ const sincronizarEstadoEmpleadoVacaciones = async (empleadoId) => {
   const hoy = new Date();
   hoy.setHours(0, 0, 0, 0); // Comparación solo por fecha
 
-  const result = await pool.request()
-    .input('empleadoId', sql.Int, empleadoId)
-    .query(`SELECT * FROM VacacionesEmpleados WHERE EmpleadoId = @empleadoId AND (Cancelada = 0 OR Cancelada IS NULL)`);
+  const result = await pool.query(
+    `SELECT * FROM "VacacionesEmpleados" WHERE "EmpleadoId" = $1 AND ("Cancelada" = false OR "Cancelada" IS NULL)`,
+    [empleadoId]
+  );
 
-  const activeVacs = result.recordset.filter(v => {
+  const activeVacs = result.rows.filter(v => {
     const inicio = new Date(v.FechaInicio);
     const fin = new Date(v.FechaFin);
     inicio.setHours(0, 0, 0, 0);
@@ -117,13 +120,9 @@ const sincronizarEstadoEmpleadoVacaciones = async (empleadoId) => {
   });
 
   if (activeVacs.length > 0) {
-    await pool.request()
-      .input('empleadoId', sql.Int, empleadoId)
-      .query("UPDATE Empleados SET Estatus = 'Vacaciones', Vacaciones = 0 WHERE Id = @empleadoId");
+    await pool.query("UPDATE \"Empleados\" SET \"Estatus\" = 'Vacaciones', \"Vacaciones\" = 0 WHERE \"Id\" = $1", [empleadoId]);
   } else {
-    await pool.request()
-      .input('empleadoId', sql.Int, empleadoId)
-      .query("UPDATE Empleados SET Estatus = 'Activo', Vacaciones = 0 WHERE Id = @empleadoId");
+    await pool.query("UPDATE \"Empleados\" SET \"Estatus\" = 'Activo', \"Vacaciones\" = 0 WHERE \"Id\" = $1", [empleadoId]);
   }
 };
 const fmtFecha = (f) => {
@@ -163,11 +162,12 @@ const registrarVacaciones = async (req, res) => {
 
   try {
     const pool = getPool();
-    const emp = await pool.request()
-      .input('id', sql.Int, id)
-      .query('SELECT Id, Nombre, Apellidos, TiempoEnEstadoValor, TiempoEnEstadoUnidad, FechaIngreso FROM Empleados WHERE Id = @id');
-    if (emp.recordset.length === 0) return res.status(404).json({ error: 'Empleado no encontrado' });
-    const empleado = emp.recordset[0];
+    const emp = await pool.query(
+      'SELECT "Id", "Nombre", "Apellidos", "TiempoEnEstadoValor", "TiempoEnEstadoUnidad", "FechaIngreso" FROM "Empleados" WHERE "Id" = $1',
+      [id]
+    );
+    if (emp.rows.length === 0) return res.status(404).json({ error: 'Empleado no encontrado' });
+    const empleado = emp.rows[0];
 
     const aniosInfo = obtenerAniosServicioDesdeEmpleado(empleado);
     if (aniosInfo === null) {
@@ -185,11 +185,11 @@ const registrarVacaciones = async (req, res) => {
     if (periodosAnio >= 3) return res.status(400).json({ error: `Limite de 3 períodos de vacaciones alcanzado para el año ${anioVacaciones}` });
 
     const hoy = new Date();
-    const periodoEnCurso = await pool.request()
-      .input('id', sql.Int, id)
-      .input('hoy', sql.Date, hoy)
-      .query("SELECT COUNT(*) as total FROM VacacionesEmpleados WHERE EmpleadoId = @id AND (Cancelada = 0 OR Cancelada IS NULL) AND FechaInicio <= @hoy AND FechaFin >= @hoy");
-    if (periodoEnCurso.recordset[0].total > 0) {
+    const periodoEnCurso = await pool.query(
+      "SELECT COUNT(*) as total FROM \"VacacionesEmpleados\" WHERE \"EmpleadoId\" = $1 AND (\"Cancelada\" = false OR \"Cancelada\" IS NULL) AND \"FechaInicio\" <= $2 AND \"FechaFin\" >= $2",
+      [id, hoy]
+    );
+    if (Number(periodoEnCurso.rows[0].total) > 0) {
       return res.status(400).json({ error: 'Ya hay un período de vacaciones en curso. Cancela o elimina antes de registrar uno nuevo.' });
     }
 
@@ -211,15 +211,11 @@ const registrarVacaciones = async (req, res) => {
 
     const fechaFin = calcularFechaFin(fechaInicio, diasSeleccionados);
 
-    await pool.request()
-      .input('EmpleadoId',       sql.Int,     id)
-      .input('FechaInicio',      sql.Date,    fechaInicio)
-      .input('FechaFin',         sql.Date,    fechaFin)
-      .input('DiasCorresponden', sql.Int,     diasSeleccionados)
-      .input('AniosServicio',    sql.Int,     aniosServicio)
-      .input('Observaciones',    sql.NVarChar,Observaciones || null)
-      .query(`INSERT INTO VacacionesEmpleados (EmpleadoId, FechaInicio, FechaFin, DiasCorresponden, AniosServicio, Observaciones, Cancelada)
-              VALUES (@EmpleadoId, @FechaInicio, @FechaFin, @DiasCorresponden, @AniosServicio, @Observaciones, 0)`);
+    await pool.query(
+      `INSERT INTO "VacacionesEmpleados" ("EmpleadoId", "FechaInicio", "FechaFin", "DiasCorresponden", "AniosServicio", "Observaciones", "Cancelada")
+       VALUES ($1, $2, $3, $4, $5, $6, false)`,
+      [id, fechaInicio, fechaFin, diasSeleccionados, aniosServicio, Observaciones || null]
+    );
 
     await registrarEventoHistorial(id, 'Vacaciones', `Nuevo período de ${diasSeleccionados} días`, `Registrado ${diasSeleccionados} días ${fmtFecha(fechaInicio)} - ${fmtFecha(fechaFin)}`);
     await sincronizarEstadoEmpleadoVacaciones(id);
@@ -245,12 +241,13 @@ const obtenerVacaciones = async (req, res) => {
   try {
     await sincronizarEstadoEmpleadoVacaciones(req.params.id);
     const pool = getPool();
-    const resultado = await pool.request()
-      .input('id', sql.Int, req.params.id)
-      .query(`SELECT * FROM VacacionesEmpleados WHERE EmpleadoId = @id ORDER BY FechaInicio DESC`);
+    const resultado = await pool.query(
+      `SELECT * FROM "VacacionesEmpleados" WHERE "EmpleadoId" = $1 ORDER BY "FechaInicio" DESC`,
+      [req.params.id]
+    );
 
     const hoy = new Date();
-    const vacaciones = resultado.recordset.map(v => {
+    const vacaciones = resultado.rows.map(v => {
       const fechaInicio = new Date(v.FechaInicio);
       const fechaFin = new Date(v.FechaFin);
       let estado = 'Activa';
@@ -283,7 +280,8 @@ const obtenerVacaciones = async (req, res) => {
     const añoActual = new Date().getFullYear();
     const diasTomadosAñoActual = await obtenerDiasTomados(pool, req.params.id, añoActual);
     const periodosAñoActual = await obtenerPeriodosTomados(pool, req.params.id, añoActual);
-    const diasCorrespondenAnioActual = calcularDiasVacaciones(calcularAnios((await pool.request().input('id', sql.Int, req.params.id).query('SELECT FechaIngreso FROM Empleados WHERE Id = @id')).recordset[0]?.FechaIngreso));
+    const empleadoResult = await pool.query('SELECT "FechaIngreso" FROM "Empleados" WHERE "Id" = $1', [req.params.id]);
+    const diasCorrespondenAnioActual = calcularDiasVacaciones(calcularAnios(empleadoResult.rows[0]?.FechaIngreso));
 
     res.json({
       vacaciones,
@@ -305,15 +303,13 @@ const obtenerVacaciones = async (req, res) => {
 const cancelarVacacion = async (req, res) => {
   try {
     const pool = getPool();
-    const vac = await pool.request()
-      .input('id', sql.Int, req.params.vacacionId)
-      .query('SELECT * FROM VacacionesEmpleados WHERE Id = @id');
+    const vac = await pool.query('SELECT * FROM "VacacionesEmpleados" WHERE "Id" = $1', [req.params.vacacionId]);
 
-    if (vac.recordset.length === 0) {
+    if (vac.rows.length === 0) {
       return res.status(404).json({ error: 'Registro de vacaciones no encontrado' });
     }
 
-    const vacacion = vac.recordset[0];
+    const vacacion = vac.rows[0];
     const hoy = new Date();
     const fechaInicio = new Date(vacacion.FechaInicio);
     const fechaFinPrevista = new Date(vacacion.FechaFin);
@@ -321,16 +317,15 @@ const cancelarVacacion = async (req, res) => {
     const diasUsados = calcularDiasHabilesEntre(fechaInicio, fechaCorte);
 
     // Ajustar los días correspondientes al tiempo efectivamente tomado y marcar cancelado
-    await pool.request()
-      .input('id', sql.Int, req.params.vacacionId)
-      .input('diasUsados', sql.Int, diasUsados)
-      .input('fechaFin', sql.Date, fechaCorte)
-      .query(`UPDATE VacacionesEmpleados
-              SET Cancelada = 1,
-                  FechaCancelacion = GETDATE(),
-                  DiasCorresponden = @diasUsados,
-                  FechaFin = @fechaFin
-              WHERE Id = @id`);
+    await pool.query(
+      `UPDATE "VacacionesEmpleados"
+       SET "Cancelada" = true,
+           "FechaCancelacion" = NOW(),
+           "DiasCorresponden" = $1,
+           "FechaFin" = $2
+       WHERE "Id" = $3`,
+      [diasUsados, fechaCorte, req.params.vacacionId]
+    );
 
     await registrarEventoHistorial(vacacion.EmpleadoId, 'Vacaciones', `Período cancelado ${fmtFecha(fechaInicio)} - ${fmtFecha(fechaFinPrevista)}`, `Cancelado el ${fmtFecha(fechaCorte)} (${diasUsados} días usados)`);
     await sincronizarEstadoEmpleadoVacaciones(vacacion.EmpleadoId);
@@ -351,44 +346,37 @@ const reactivarVacacion = async (req, res) => {
   try {
     const pool = getPool();
     // Verificar límite de 3 activas
-    const vac = await pool.request()
-      .input('id', sql.Int, req.params.vacacionId)
-      .query('SELECT EmpleadoId FROM VacacionesEmpleados WHERE Id = @id');
-    if (vac.recordset.length === 0) return res.status(404).json({ error: 'No encontrada' });
-    const empId = vac.recordset[0].EmpleadoId;
+    const vac = await pool.query('SELECT "EmpleadoId" FROM "VacacionesEmpleados" WHERE "Id" = $1', [req.params.vacacionId]);
+    if (vac.rows.length === 0) return res.status(404).json({ error: 'No encontrada' });
+    const empId = vac.rows[0].EmpleadoId;
     const hoy = new Date();
 
-    const enCurso = await pool.request()
-      .input('empId', sql.Int, empId)
-      .input('hoy', sql.Date, hoy)
-      .input('id', sql.Int, req.params.vacacionId)
-      .query(`SELECT COUNT(*) as total FROM VacacionesEmpleados
-              WHERE EmpleadoId = @empId
-                AND (Cancelada = 0 OR Cancelada IS NULL)
-                AND Id != @id
-                AND FechaInicio <= @hoy
-                AND FechaFin >= @hoy`);
+    const enCurso = await pool.query(
+      `SELECT COUNT(*) as total FROM "VacacionesEmpleados"
+       WHERE "EmpleadoId" = $1
+         AND ("Cancelada" = false OR "Cancelada" IS NULL)
+         AND "Id" != $2
+         AND "FechaInicio" <= $3
+         AND "FechaFin" >= $3`,
+      [empId, req.params.vacacionId, hoy]
+    );
 
-    if (enCurso.recordset[0].total > 0) {
+    if (Number(enCurso.rows[0].total) > 0) {
       return res.status(400).json({ error: 'Ya existe un período de vacaciones en curso. Cancela o espera que termine antes de reactivar otra.' });
     }
 
-    const infoVacacion = await pool.request()
-      .input('id', sql.Int, req.params.vacacionId)
-      .query('SELECT FechaInicio FROM VacacionesEmpleados WHERE Id = @id');
-    if (infoVacacion.recordset.length === 0) return res.status(404).json({ error: 'Registro de vacaciones no encontrado' });
+    const infoVacacion = await pool.query('SELECT "FechaInicio" FROM "VacacionesEmpleados" WHERE "Id" = $1', [req.params.vacacionId]);
+    if (infoVacacion.rows.length === 0) return res.status(404).json({ error: 'Registro de vacaciones no encontrado' });
 
-    const anioReactivacion = new Date(infoVacacion.recordset[0].FechaInicio).getFullYear();
+    const anioReactivacion = new Date(infoVacacion.rows[0].FechaInicio).getFullYear();
     const periodosAnio = await obtenerPeriodosTomados(pool, empId, anioReactivacion);
     if (periodosAnio >= 3) return res.status(400).json({ error: `Ya tiene 3 períodos de vacaciones activos para el año ${anioReactivacion}` });
 
-    await pool.request()
-      .input('id', sql.Int, req.params.vacacionId)
-      .query(`UPDATE VacacionesEmpleados SET Cancelada = 0, FechaCancelacion = NULL WHERE Id = @id`);
+    await pool.query(`UPDATE "VacacionesEmpleados" SET "Cancelada" = false, "FechaCancelacion" = NULL WHERE "Id" = $1`, [req.params.vacacionId]);
 
-    const vacacion = await pool.request().input('id', sql.Int, req.params.vacacionId).query('SELECT FechaInicio, FechaFin, DiasCorresponden FROM VacacionesEmpleados WHERE Id = @id');
-    if (vacacion.recordset.length > 0) {
-      const v = vacacion.recordset[0];
+    const vacacion = await pool.query('SELECT "FechaInicio", "FechaFin", "DiasCorresponden" FROM "VacacionesEmpleados" WHERE "Id" = $1', [req.params.vacacionId]);
+    if (vacacion.rows.length > 0) {
+      const v = vacacion.rows[0];
       await registrarEventoHistorial(empId, 'Vacaciones', `Período reactivado`, `${v.DiasCorresponden} días ${fmtFecha(v.FechaInicio)} - ${fmtFecha(v.FechaFin)}`);
     }
 
@@ -403,23 +391,19 @@ const reactivarVacacion = async (req, res) => {
 const eliminarVacaciones = async (req, res) => {
   try {
     const pool = getPool();
-    const vac = await pool.request()
-      .input('id', sql.Int, req.params.vacacionId)
-      .query('SELECT EmpleadoId FROM VacacionesEmpleados WHERE Id = @id');
-    if (vac.recordset.length === 0) {
+    const vac = await pool.query('SELECT "EmpleadoId" FROM "VacacionesEmpleados" WHERE "Id" = $1', [req.params.vacacionId]);
+    if (vac.rows.length === 0) {
       return res.status(404).json({ error: 'Registro de vacaciones no encontrado' });
     }
-    const empleadoId = vac.recordset[0].EmpleadoId;
+    const empleadoId = vac.rows[0].EmpleadoId;
 
-    const vacacion = await pool.request().input('id', sql.Int, req.params.vacacionId).query('SELECT FechaInicio, FechaFin, DiasCorresponden FROM VacacionesEmpleados WHERE Id = @id');
-    if (vacacion.recordset.length > 0) {
-      const v = vacacion.recordset[0];
+    const vacacion = await pool.query('SELECT "FechaInicio", "FechaFin", "DiasCorresponden" FROM "VacacionesEmpleados" WHERE "Id" = $1', [req.params.vacacionId]);
+    if (vacacion.rows.length > 0) {
+      const v = vacacion.rows[0];
       await registrarEventoHistorial(empleadoId, 'Vacaciones', `Período eliminado`, `${v.DiasCorresponden} días ${fmtFecha(v.FechaInicio)} - ${fmtFecha(v.FechaFin)}`);
     }
 
-    await pool.request()
-      .input('id', sql.Int, req.params.vacacionId)
-      .query('DELETE FROM VacacionesEmpleados WHERE Id = @id');
+    await pool.query('DELETE FROM "VacacionesEmpleados" WHERE "Id" = $1', [req.params.vacacionId]);
 
     await sincronizarEstadoEmpleadoVacaciones(empleadoId);
     res.json({ mensaje: 'Vacaciones eliminadas' });
@@ -436,12 +420,13 @@ const calcularPreview = async (req, res) => {
 
   try {
     const pool = getPool();
-    const emp = await pool.request()
-      .input('id', sql.Int, id)
-      .query('SELECT FechaIngreso, TiempoEnEstadoValor, TiempoEnEstadoUnidad FROM Empleados WHERE Id = @id');
-    if (emp.recordset.length === 0) return res.status(404).json({ error: 'Empleado no encontrado' });
+    const emp = await pool.query(
+      'SELECT "FechaIngreso", "TiempoEnEstadoValor", "TiempoEnEstadoUnidad" FROM "Empleados" WHERE "Id" = $1',
+      [id]
+    );
+    if (emp.rows.length === 0) return res.status(404).json({ error: 'Empleado no encontrado' });
 
-    const empleadoInfo = emp.recordset[0];
+    const empleadoInfo = emp.rows[0];
 
     // Priorizar datos de entrada explicita (desde formulario) si están presentes
     if (req.query.FechaIngreso) {
@@ -471,15 +456,12 @@ const calcularPreview = async (req, res) => {
       return res.status(400).json({ error: `Limite de 3 períodos de vacaciones alcanzado para el año ${anioPreview}` });
     }
 
-    console.log(`[vacaciones/preview/FIXED] empleadoId=${id}, FechaIngreso=${empleadoInfo.FechaIngreso}, aniosServicio=${aniosServicio} (ingreso=${aniosIngreso}, estado=${aniosEstado}), diasCorresponden=${diasCorresponden}, diasTomados=${diasTomados}, diasDisponibles=${diasDisponibles}`);
-
-
     const hoy = new Date();
-    const periodoEnCurso = await pool.request()
-      .input('id', sql.Int, id)
-      .input('hoy', sql.Date, hoy)
-      .query("SELECT COUNT(*) as total FROM VacacionesEmpleados WHERE EmpleadoId = @id AND (Cancelada = 0 OR Cancelada IS NULL) AND FechaInicio <= @hoy AND FechaFin >= @hoy");
-    if (periodoEnCurso.recordset[0].total > 0) {
+    const periodoEnCurso = await pool.query(
+      "SELECT COUNT(*) as total FROM \"VacacionesEmpleados\" WHERE \"EmpleadoId\" = $1 AND (\"Cancelada\" = false OR \"Cancelada\" IS NULL) AND \"FechaInicio\" <= $2 AND \"FechaFin\" >= $2",
+      [id, hoy]
+    );
+    if (Number(periodoEnCurso.rows[0].total) > 0) {
       return res.status(400).json({ error: 'Ya hay un período de vacaciones en curso. Cancela o elimina antes de registrar uno nuevo.' });
     }
 
@@ -535,16 +517,12 @@ const calcularPreview = async (req, res) => {
 const imprimirVacaciones = async (req, res) => {
   try {
     const pool = getPool();
-    const emp = await pool.request()
-      .input('id', sql.Int, req.params.id)
-      .query('SELECT * FROM Empleados WHERE Id = @id');
-    if (emp.recordset.length === 0) return res.status(404).json({ error: 'Empleado no encontrado' });
-    const empleado = emp.recordset[0];
+    const emp = await pool.query('SELECT * FROM "Empleados" WHERE "Id" = $1', [req.params.id]);
+    if (emp.rows.length === 0) return res.status(404).json({ error: 'Empleado no encontrado' });
+    const empleado = emp.rows[0];
 
-    const vacs = await pool.request()
-      .input('id', sql.Int, req.params.id)
-      .query('SELECT * FROM VacacionesEmpleados WHERE EmpleadoId = @id ORDER BY FechaInicio DESC');
-    const vacaciones = vacs.recordset;
+    const vacs = await pool.query('SELECT * FROM "VacacionesEmpleados" WHERE "EmpleadoId" = $1 ORDER BY "FechaInicio" DESC', [req.params.id]);
+    const vacaciones = vacs.rows;
 
     const logoPath = path.join(__dirname, '../templates/logo.png');
     const logoBase64 = fs.existsSync(logoPath)
@@ -570,7 +548,7 @@ const imprimirVacaciones = async (req, res) => {
     const aniosServicio = calcularAnios(empleado.FechaIngreso);
     const diasCorresponden = calcularDiasVacaciones(aniosServicio);
     const activas = vacaciones.filter(v => v.Cancelada !== 1 && v.Cancelada !== true).length;
-const canceladas = vacaciones.filter(v => v.Cancelada === 1 || v.Cancelada === true).length;
+    const canceladas = vacaciones.filter(v => v.Cancelada === 1 || v.Cancelada === true).length;
 
     const html = `<!DOCTYPE html>
 <html lang="es">
